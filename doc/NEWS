@@ -115,7 +115,22 @@ Major changes from 1.9.0-jumbo-1 (May 2019) in this bleeding-edge version:
 
 - 7z formats:  Added support for BCJ et. al. (that's pre-processors sometimes
   used before compression.  Before this we had false negatives for those.
-  Also updated LZMA code from upstream, to versioj 19.00.
+  Also updated LZMA code from upstream, to version 19.00.  [magnum; 2020]
+
+- Upgraded Unicode stuff from version 11.0.0 to 13.0.0.  This affects the
+  external modes Dumb16, Dumb32, Repeats16 and Repeats32.  It also affects
+  the Easter egg option "--subsets=full-unicode" which BTW supersedes the
+  external modes with far better performance.  [magnum; 2020]
+
+- Add support for ssh new-style private keys encrypted using `aes256-ctr`
+  cipher.  [vkhromov; 2020]
+
+- Implement full checking in SSH OpenCL format, and stop it as well as the
+  CPU SSH format from defaulting to --keep-guessing.  Bugs were squashed as
+  well.  For any remaining problems with false-positives (if any), user can
+  selectively use the --keep-guessing option.  [magnum; 2020]
+
+- Add support for --format=LIST  [magnum; 2020]
 
 
 Major changes from 1.8.0-jumbo-1 (December 2014) to 1.9.0-jumbo-1 (May 2019):

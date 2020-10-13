@@ -43,7 +43,7 @@
  * filename:$pkzip2$C*B*[DT*MT{CL*UL*CR*OF*OX}*CT*DL*CS*TC*DA]*$/pkzip2$   (new format, with 2 checksums)
  * All numeric and 'binary data' fields are stored in hex.
  *
- * C   is the count of hashes present (the array of items, inside the []  C can be 1 to 3.).
+ * C   is the count of hashes present (the array of items, inside the []  C can be 1 to 8.).
  * B   is number of valid bytes in the checksum (1 or 2).  Unix zip is 2 bytes, all others are 1 (NOTE, some can be 0)
  * ARRAY of data starts here
  *   DT  is a "Data Type enum".  This will be 1 2 or 3.  1 is 'partial'. 2 and 3 are full file data (2 is inline, 3 is load from file).
@@ -133,6 +133,10 @@
 #endif
 #include "johnswap.h"
 
+#define _STR_VALUE(arg) #arg
+#define STR_MACRO(n)    _STR_VALUE(n)
+#define MAX_FILES STR_MACRO(MAX_PKZ_FILES)
+
 #define MAX_BLOB_INLINE_SIZE 0x400000000ULL // 16 GB
 
 #define FLAG_ENCRYPTED            1
@@ -184,8 +188,8 @@ static int fexpect(FILE *stream, int c)
 	return d == c;
 }
 
-static int checksum_only = 0, use_magic = 0;
-static int force_2_byte_checksum = 0;
+static int checksum_only, use_magic;
+static int force_1_byte_checksum, force_2_byte_checksum;
 static char *ascii_fname, *only_fname;
 
 static char *MagicTypes[] = { "", "DOC", "XLS", "DOT", "XLT", "EXE", "DLL", "ZIP", "BMP", "DIB", "GIF", "PDF", "GZ", "TGZ", "BZ2", "TZ2", "FLV", "SWF", "MP3", "PST", NULL };
@@ -225,7 +229,6 @@ typedef struct _zip_file
 {
 	FILE *fp;
 	const char *fname;
-	int unix_made; // not used, inverse of check_in_crc...
 	int check_in_crc; // ??? only used for debug output...
 	int check_bytes;  // number of valid bytes in checksum
 	int zip64; // Is ZIP64 format (has ZIP64 EOCD)
@@ -233,7 +236,7 @@ typedef struct _zip_file
 
 // Wrapper struct so we don't have to pass three pointers all the time
 typedef struct _zip_context {
-	zip_ptr best_files[3];  // Three candidated for handling old encryption type archives
+	zip_ptr best_files[MAX_PKZ_FILES]; // Up to 8 candidates for handling old encryption type archives
 	zip_ptr curzip;         // Meta data of file in archive we're currently processing
 	zip_file archive;       // The zip file being processed
 	int num_candidates;     // Number of candidates in best_files array
@@ -741,6 +744,8 @@ static int load_local_header(zip_file *zfp, zip_ptr *p)
 static int process_legacy(zip_file *zfp, zip_ptr *p)
 {
 	FILE *fp = zfp->fp;
+
+	force_1_byte_checksum = 0;
 	fprintf(stderr, "ver %d.%d ", p->version / 10, p->version % 10);
 
 	if ( (p->flags & FLAG_ENCRYPTED) &&
@@ -774,16 +779,23 @@ static int process_legacy(zip_file *zfp, zip_ptr *p)
 				// OLD winzip (I think 8.01 or before), is also supposed to be 2 byte.
 				// old v1 pkzip (the DOS builds) are 2 byte checksums.
 			{
-				zfp->unix_made = 1;
 				zfp->check_bytes = 2;
 				zfp->check_in_crc = 0;
 			}
+
+			// This suggests libarchive and/or eZip was involved, and seems to
+			// indicate we only have a 1-byte valid CS. See #4300
+			if (efh_id == 0x6c78)
+				force_1_byte_checksum = 1;
 		}
 
 		scan_for_data_descriptor(zfp, p);
 
+		// Command line option -2 will override libarchive EFH
 		if (force_2_byte_checksum)
 			zfp->check_bytes = 2;
+		else if (force_1_byte_checksum)
+			zfp->check_bytes = 1;
 
 		fprintf(stderr,
 		        "%s/%s PKZIP%s Encr:%s%s cmplen=%"PRIu64", decmplen=%"PRIu64", crc=%X type=%"PRIu16"\n",
@@ -855,73 +867,19 @@ static void handle_file_entry(zip_context *ctx)
 	}
 
 	// Suitable file with legacy encryption
-	if (ctx->num_candidates == 0) {
-		move_entry(&(ctx->best_files[ctx->num_candidates++]), &ctx->curzip);
-	} else if (ctx->num_candidates == 1) {
-		if (ctx->curzip.cmp_len < ctx->best_files[0].cmp_len) {
-			move_entry(&(ctx->best_files[ctx->num_candidates++]), &(ctx->best_files[0]));
-			move_entry(&(ctx->best_files[0]), &ctx->curzip);
-		} else {
-			move_entry(&(ctx->best_files[ctx->num_candidates++]), &ctx->curzip);
-		}
-	} else if (ctx->num_candidates == 2) {
-		if (ctx->curzip.cmp_len < ctx->best_files[0].cmp_len) {
-			move_entry(&(ctx->best_files[ctx->num_candidates++]), &(ctx->best_files[1]));
-			move_entry(&(ctx->best_files[1]), &(ctx->best_files[0]));
-			move_entry(&(ctx->best_files[0]), &ctx->curzip);
-		} else if (ctx->curzip.cmp_len < ctx->best_files[1].cmp_len) {
-			move_entry(&(ctx->best_files[ctx->num_candidates++]), &(ctx->best_files[1]));
-			move_entry(&(ctx->best_files[1]), &ctx->curzip);
-		} else {
-			move_entry(&(ctx->best_files[ctx->num_candidates++]), &ctx->curzip);
-		}
-	} else {
-		int done = 0;
-		if (ctx->curzip.magic_type && ctx->curzip.cmp_len > ctx->best_files[0].cmp_len) {
-			// if we have a magic type, we will replace any NON magic type, for the 2nd and 3rd largest, without caring about
-			// the size.
-			if (ctx->best_files[1].magic_type == 0) {
-				if (ctx->best_files[2].cmp_len < ctx->curzip.cmp_len) {
-					move_entry(&(ctx->best_files[1]), &(ctx->best_files[2]));
-					move_entry(&(ctx->best_files[2]), &ctx->curzip);
-					done = 1;
-				} else {
-					move_entry(&(ctx->best_files[1]), &ctx->curzip);
-					done = 1;
-				}
-			} else if (ctx->best_files[2].magic_type == 0) {
-				if (ctx->best_files[1].cmp_len < ctx->curzip.cmp_len) {
-					move_entry(&(ctx->best_files[2]), &ctx->curzip);
-					done = 1;
-				} else {
-					move_entry(&(ctx->best_files[2]), &(ctx->best_files[1]));
-					move_entry(&(ctx->best_files[1]), &ctx->curzip);
-					done = 1;
-				}
-			}
-		}
-		if (!done && ctx->curzip.cmp_len < ctx->best_files[0].cmp_len) {
-			// we 'only' replace the smallest zip, and always keep as many any other magic as possible.
-			if (ctx->best_files[0].magic_type == 0) {
-				move_entry(&(ctx->best_files[0]), &ctx->curzip);
-			} else {
-				// Ok, the 1st is a magic, we WILL keep it.
-				if (ctx->best_files[1].magic_type) {  // Ok, we found our 2
-					move_entry(&(ctx->best_files[2]), &(ctx->best_files[1]));
-					move_entry(&(ctx->best_files[1]), &(ctx->best_files[0]));
-					move_entry(&(ctx->best_files[0]), &ctx->curzip);
-				} else if (ctx->best_files[2].magic_type) {  // Ok, we found our 2
-					move_entry(&(ctx->best_files[1]), &(ctx->best_files[0]));
-					move_entry(&(ctx->best_files[0]), &ctx->curzip);
-				} else {
-					// found none.  So we will simply roll them down (like when #1 was a magic also).
-					move_entry(&(ctx->best_files[2]), &(ctx->best_files[1]));
-					move_entry(&(ctx->best_files[1]), &(ctx->best_files[0]));
-					move_entry(&(ctx->best_files[0]), &ctx->curzip);
-				}
-			}
+	int i, j;
+
+	for (i = 0; i < ctx->num_candidates; i++) {
+		if (ctx->curzip.cmp_len < ctx->best_files[i].cmp_len) {
+			for (j = ctx->num_candidates; j > i; j--)
+				if (j < MAX_PKZ_FILES)
+					move_entry(&(ctx->best_files[j]), &(ctx->best_files[j - 1]));
+			break;
 		}
 	}
+	move_entry(&(ctx->best_files[i]), &ctx->curzip);
+	if (ctx->num_candidates < MAX_PKZ_FILES)
+		ctx->num_candidates++;
 }
 
 static void print_and_cleanup(zip_context *ctx);
@@ -932,7 +890,6 @@ static void init_zip_context(zip_context *ctx, const char *fname, FILE *fp)
 	ctx->archive.fname = fname;
 	ctx->archive.check_in_crc = 1;
 	ctx->archive.check_bytes = 1;
-	ctx->archive.unix_made = 0;
 	ctx->archive.fp = fp;
 }
 
@@ -1213,10 +1170,8 @@ static int usage(char *name)
 	fprintf(stderr, " -o <filename>   Only use this file from the .zip file.\n");
 	fprintf(stderr, " -c This will create a 'checksum only' hash.  If there are many encrypted\n");
 	fprintf(stderr, "    files in the .zip file, then this may be an option, and there will be\n");
-	fprintf(stderr, "    enough data that false positives will not be seen.  If the .zip is 2\n");
-	fprintf(stderr, "    byte checksums, and there are 3 or more of them, then we have 48 bits\n");
-	fprintf(stderr, "    knowledge, which 'may' be enough to crack the password, without having\n");
-	fprintf(stderr, "    to force the user to have the .zip file present.\n");
+	fprintf(stderr, "    enough data that false positives will not be seen.  Up to " MAX_FILES " files are\n");
+	fprintf(stderr, "    supported. These hashes do not reveal actual file data.\n");
 	fprintf(stderr, " -m Use \"file magic\" as known-plain if applicable. This can be faster but\n");
 	fprintf(stderr, "    not 100%% safe in all situations.\n");
 	fprintf(stderr, " -2 Force 2 byte checksum computation.\n");

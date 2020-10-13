@@ -31,7 +31,7 @@ john_register_one(&fmt_opencl_ethereum);
 #define FORMAT_LABEL            "ethereum-opencl"
 #define ALGORITHM_NAME          "PBKDF2-SHA256 Keccak OpenCL"
 #define BENCHMARK_COMMENT       ""
-#define BENCHMARK_LENGTH        0x107
+#define BENCHMARK_LENGTH        0x507
 #define MIN_KEYS_PER_CRYPT      1
 #define MAX_KEYS_PER_CRYPT      1
 #define BINARY_ALIGN            sizeof(uint32_t)
@@ -85,8 +85,12 @@ static int split_events[] = { 2, -1, -1 };
 // This file contains auto-tuning routine(s). Has to be included after formats definitions.
 #include "opencl_autotune.h"
 
+static void release_clobj(void);
+
 static void create_clobj(size_t kpc, struct fmt_main *self)
 {
+	release_clobj();
+
 #define CL_RO CL_MEM_READ_ONLY
 #define CL_WO CL_MEM_WRITE_ONLY
 #define CL_RW CL_MEM_READ_WRITE

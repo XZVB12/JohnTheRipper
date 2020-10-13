@@ -92,8 +92,12 @@ static size_t get_task_max_work_group_size()
 	return autotune_get_task_max_work_group_size(FALSE, 0, crypt_kernel);
 }
 
+static void release_clobj(void);
+
 static void create_clobj(size_t gws, struct fmt_main *self)
 {
+	release_clobj();
+
 	insize = sizeof(ssh_password) * gws;
 	outsize = sizeof(ssh_out) * gws;
 	settingsize = sizeof(ssh_salt);
@@ -275,7 +279,7 @@ struct fmt_main fmt_opencl_ssh = {
 		SALT_ALIGN,
 		MIN_KEYS_PER_CRYPT,
 		MAX_KEYS_PER_CRYPT,
-		FMT_CASE | FMT_8_BIT | FMT_NOT_EXACT | FMT_HUGE_INPUT,
+		FMT_CASE | FMT_8_BIT | FMT_SPLIT_UNIFIES_CASE | FMT_HUGE_INPUT,
 		{
 			"KDF/cipher [0=MD5/AES 1=MD5/3DES 2=Bcrypt/AES]",
 			"iteration count",
@@ -288,7 +292,7 @@ struct fmt_main fmt_opencl_ssh = {
 		reset,
 		fmt_default_prepare,
 		ssh_valid,
-		fmt_default_split,
+		ssh_split,
 		fmt_default_binary,
 		ssh_get_salt,
 		{

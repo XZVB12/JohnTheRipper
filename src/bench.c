@@ -10,9 +10,6 @@
  * There's ABSOLUTELY NO WARRANTY, express or implied.
  */
 
-#define _BSD_SOURCE /* for setenv() */
-#define _DEFAULT_SOURCE 1 /* for setenv() */
-
 #if defined (__MINGW32__) || defined (_MSC_VER)
 #define SIGALRM SIGFPE
 #endif
@@ -35,7 +32,7 @@
 #if HAVE_SYS_TIMES_H
 #include <sys/times.h>
 #endif
-#include <stdlib.h> /* setenv */
+#include <stdlib.h> /* system(3) */
 
 #include "times.h"
 
@@ -52,6 +49,7 @@
 #include "unicode.h"
 #include "config.h"
 #include "gpu_common.h"
+#include "opencl_common.h"
 #include "mask.h"
 #include "aligned.h"
 
@@ -432,12 +430,12 @@ char *benchmark_format(struct fmt_main *format, int salts,
 	if (format->params.binary_size > binary_size) {
 		binary_size = format->params.binary_size;
 		binary = mem_alloc_tiny(binary_size, MEM_ALIGN_SIMD);
-		memset(binary, 0x55, binary_size);
 	}
+	memset(binary, 0x55, binary_size);
 	if (format->params.flags & FMT_BLOB)
 		memcpy(binary,
 		       format->methods.binary(format->params.tests[0].ciphertext),
-		       binary_size);
+		       format->params.binary_size);
 
 	for (index = 0; index < 2; index++) {
 		two_salts[index] = mem_alloc_align(format->params.salt_size,
@@ -714,7 +712,8 @@ int benchmark_all(void)
 	const char *s_gpu1 = "";
 #endif
 #ifndef BENCH_BUILD
-	unsigned int loop_fail = 0, loop_total = 0;
+	unsigned int loop_fail = 0, loop_total = 1;
+	int nvidia_mem = 0;
 #endif
 	unsigned int total, failed;
 	struct db_main *test_db;
@@ -722,6 +721,7 @@ int benchmark_all(void)
 	int ompt;
 	int ompt_start = omp_get_max_threads();
 #endif
+	const char *opencl_was_skipped = "";
 
 	benchmark_running = 1;
 
@@ -731,6 +731,12 @@ int benchmark_all(void)
 		puts("NOTE: This is a debug build, speed will be lower than normal");
 #endif
 
+	if ((options.flags & FLG_LOOPTEST) && system("which nvidia-smi >/dev/null") == 0) {
+		nvidia_mem = 1;
+		fprintf(stderr, "GPU memory at start: ");
+		if (system("nvidia-smi --query-gpu=memory.used --format=csv,noheader"))
+			nvidia_mem = 0;
+	}
 AGAIN:
 	options.loader.field_sep_char = 31;
 #endif
@@ -778,8 +784,23 @@ AGAIN:
 		if ((format->params.flags & FMT_DYNAMIC) ||
 		    strstr(format->params.label, "-opencl") ||
 		    strstr(format->params.label, "-ztex") ||
-		    !strcmp(format->params.label, "crypt"))
+		    !strcmp(format->params.label, "crypt")) {
+#ifdef HAVE_OPENCL
+/*
+ * Allow OpenCL build's "--test" to run on no-OpenCL systems.
+ * It is a hack, but it is necessary since OpenCL must be started
+ * to get the number of devices. OpenCL initialization (enumeration
+ * of platforms and devices, option parsing) is performed only once.
+*/
+			if (strstr(format->params.label, "-opencl")) {
+				opencl_load_environment();
+
+				if (get_number_of_available_devices() == 0)
+					continue;
+			}
+#endif
 			fmt_init(format);
+		}
 
 		/* [GPU-side] mask mode benchmark */
 		if (options.mask) {
@@ -803,7 +824,7 @@ AGAIN:
 
 #ifndef BENCH_BUILD
 		if ((options.flags & FLG_LOOPTEST) && john_main_process)
-			printf("#%u ", ++loop_total);
+			printf("#%u ", loop_total);
 #endif
 		if (john_main_process)
 		printf("%s: %s%s%s%s [%s%s%s%s]... ",
@@ -1033,6 +1054,10 @@ AGAIN:
 		}
 
 next:
+#ifndef BENCH_BUILD
+		if (nvidia_mem && system("nvidia-smi --query-gpu=memory.used --format=csv,noheader"))
+			error();
+#endif
 		fflush(stdout);
 		ldr_free_test_db(test_db);
 		fmt_done(format);
@@ -1058,11 +1083,22 @@ next:
 				printf("%u formats benchmarked.\n", total);
 			else
 #endif
-				printf("All %u formats passed self-tests!\n",
-				       total);
+
+#ifdef HAVE_OPENCL
+/*
+ * Allow OpenCL build's "--test" to run on no-OpenCL systems.
+ * Print a message about no OpenCL at the end of the run.
+ */
+				if (opencl_unavailable)
+					opencl_was_skipped = " (OpenCL formats skipped)";
+#endif
+
+				printf("All %u formats passed self-tests!%s\n",
+				       total, opencl_was_skipped);
 		}
 #ifndef BENCH_BUILD
 	if (options.flags & FLG_LOOPTEST) {
+		loop_total++;
 		if (event_abort) {
 			uint32_t p = 100 * loop_fail / loop_total;
 			uint32_t pp = 10000 * loop_fail / loop_total - p * 100;

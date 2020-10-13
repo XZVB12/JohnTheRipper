@@ -76,9 +76,13 @@ static size_t get_task_max_work_group_size()
 	return max_lws;
 }
 
+static void release_clobj(void);
+
 static void create_clobj(size_t gws, struct fmt_main *self)
 {
 	size_t mem_alloc_sz;
+
+	release_clobj();
 
 	mem_alloc_sz = KEY_SIZE_IN_BYTES * gws;
 	cl_tx_keys = clCreateBuffer(context[gpu_id],
@@ -234,15 +238,15 @@ static int crypt_all(int *pcount, struct db_salt *salt)
 	size_t mem_cpy_sz;
 	size_t N, *M;
 
-	mem_cpy_sz = count * KEY_SIZE_IN_BYTES;
+	M = local_work_size ? &local_work_size : NULL;
+	N = GET_NEXT_MULTIPLE(count, local_work_size);
+
+	mem_cpy_sz = N * KEY_SIZE_IN_BYTES;
 	BENCH_CLERROR(clEnqueueWriteBuffer(queue[gpu_id],
 					    cl_tx_keys, CL_FALSE, 0,
 					    mem_cpy_sz, saved_key,
 					    0, NULL, multi_profilingEvent[0]),
 					    "Failed to write buffer cl_tx_keys.");
-
-	M = local_work_size ? &local_work_size : NULL;
-	N = GET_NEXT_MULTIPLE(count, local_work_size);
 
 	BENCH_CLERROR(clEnqueueNDRangeKernel(queue[gpu_id],
 					      crypt_kernel, 1,
